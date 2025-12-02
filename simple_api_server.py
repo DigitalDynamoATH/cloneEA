@@ -288,6 +288,10 @@ if __name__ == '__main__':
     print("=" * 70)
     print("⏳ Waiting for requests...\n")
     
-    # Run on all interfaces, port 8080
-    app.run(host='0.0.0.0', port=8080, debug=False)
+    # Get port from environment variable (for Render/Heroku) or use default 8080
+    import os
+    port = int(os.environ.get('PORT', 8080))
+    
+    # Run on all interfaces, using PORT from environment or default 8080
+    app.run(host='0.0.0.0', port=port, debug=False)
 
