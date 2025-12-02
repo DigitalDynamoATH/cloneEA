@@ -228,6 +228,21 @@ def get_signal():
     print(f"  ℹ️  No new signal (client last_id: {last_id}, server latest: {latest_signal['id'] if latest_signal else 'None'})")
     return jsonify({"message": "No new signal"}), 204
 
+@app.route('/', methods=['GET'])
+def root():
+    """Root endpoint - API information"""
+    return jsonify({
+        "service": "MT5 Signal Bridge API",
+        "version": "1.0",
+        "endpoints": {
+            "POST /api/signal": "Receive signals from SignalSender",
+            "GET /api/signal": "Get latest signal for SignalReceiver",
+            "GET /api/signals/history": "Get signal history",
+            "GET /health": "Health check"
+        },
+        "status": "running"
+    }), 200
+
 @app.route('/health', methods=['GET'])
 def health():
     """Health check"""
