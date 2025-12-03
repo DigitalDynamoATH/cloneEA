@@ -284,7 +284,21 @@ def receive_account_status():
         if request.is_json or request.content_type == 'application/json':
             data = request.get_json(silent=True, force=True)
         
-        # If not JSON, try form-encoded
+        # If not JSON, try raw data FIRST (MT5 WebRequest sometimes sends JSON with wrong Content-Type)
+        if not data:
+            raw_data = request.get_data(as_text=True)
+            if raw_data:
+                import json
+                try:
+                    # Try to parse as JSON directly
+                    data = json.loads(raw_data)
+                    print(f"  📥 Parsed JSON from raw data (Content-Type was: {request.content_type})")
+                except Exception as e:
+                    # If not valid JSON, try form-encoded parsing
+                    print(f"  ⚠️  Raw data is not JSON, trying form-encoded: {e}")
+                    print(f"  📥 Raw data preview: {raw_data[:200]}")
+        
+        # If still no data, try form-encoded
         if not data and request.form:
             # Convert form data to dict (if sent as form-encoded)
             form_dict = dict(request.form)
@@ -294,20 +308,9 @@ def receive_account_status():
                     import json
                     try:
                         data = json.loads(form_dict['data'])
+                        print(f"  📥 Parsed JSON from form data")
                     except:
                         pass
-        
-        # If still no data, try raw data (MT5 WebRequest sometimes doesn't set Content-Type correctly)
-        if not data:
-            raw_data = request.get_data(as_text=True)
-            if raw_data:
-                import json
-                try:
-                    data = json.loads(raw_data)
-                    print(f"  📥 Parsed JSON from raw data")
-                except Exception as e:
-                    print(f"  ⚠️  Failed to parse raw data as JSON: {e}")
-                    print(f"  📥 Raw data preview: {raw_data[:200]}")
         
         if not data:
             print(f"  ❌ No data provided. Content-Type: {request.content_type}")
