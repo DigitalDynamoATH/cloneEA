@@ -683,7 +683,22 @@ string GetValue(string signal, string key)
    int endPos = StringFind(signal, "|", startPos);
    if(endPos < 0) endPos = StringLen(signal);
    
-   return StringSubstr(signal, startPos, endPos - startPos);
+   string value = StringSubstr(signal, startPos, endPos - startPos);
+   
+   // Trim leading and trailing spaces (handle both " | " and "|" formats)
+   // Remove leading spaces
+   while(StringLen(value) > 0 && StringGetCharacter(value, 0) == ' ')
+   {
+      value = StringSubstr(value, 1);
+   }
+   
+   // Remove trailing spaces
+   while(StringLen(value) > 0 && StringGetCharacter(value, StringLen(value) - 1) == ' ')
+   {
+      value = StringSubstr(value, 0, StringLen(value) - 1);
+   }
+   
+   return value;
 }
 
 //+------------------------------------------------------------------+
@@ -762,43 +777,19 @@ void ManageOpenTrades()
          double newSL = currentSL;
          
          // SMART MODE Logic (percentage-based)
-         if(Use_Smart_Mode)
+         if(Use_Smart_Mode && currentTP > 0)
          {
-            // Calculate total distance D
-            double distance = 0;
-            
-            if(currentTP > 0)
-            {
-               // If TP exists: D = |TP - Entry|
-               distance = MathAbs(currentTP - openPrice);
-            }
-            else
-            {
-               // If no TP: Use SL distance * 2 as target distance, or default 100 points
-               if(currentSL > 0)
-               {
-                  // Use SL distance * 2 as target (assume TP would be at double distance from SL)
-                  double slDistance = MathAbs(currentSL - openPrice);
-                  distance = slDistance * 2.0;
-               }
-               else
-               {
-                  // If no SL either, use a default distance (100 points)
-                  double point = SymbolInfoDouble(symbol, SYMBOL_POINT);
-                  distance = 100.0 * point;
-               }
-            }
+            // Calculate total distance D = |TP - Entry|
+            double distance = MathAbs(currentTP - openPrice);
             
             if(distance > 0)
             {
-               // Calculate current progress: how far we are from entry
-               // For BUY: progress = (currentPrice - openPrice) / distance
-               // For SELL: progress = (openPrice - currentPrice) / distance
+               // Calculate current progress: how far we are from entry towards TP
                double progress = 0;
                if(posType == POSITION_TYPE_BUY)
-                  progress = (currentPrice - openPrice) / distance; // 0 = entry, 1 = target
+                  progress = (currentPrice - openPrice) / distance; // 0 to 1 (0 = entry, 1 = TP)
                else
-                  progress = (openPrice - currentPrice) / distance; // 0 = entry, 1 = target
+                  progress = (openPrice - currentPrice) / distance; // 0 to 1 (0 = entry, 1 = TP)
                
                // Break Even: Trigger at 20% of distance, lock profit at 5%
                if(progress >= 0.20)
@@ -812,51 +803,27 @@ void ManageOpenTrades()
                   else
                      breakEvenSL = NormalizeDouble(openPrice - lockedProfitDistance, digits);
                   
-                  // Only move SL if it's better than current AND (TP exists OR currentSL is 0)
-                  // If no TP and SL exists, don't move SL (keep original SL)
-                  bool shouldMoveSL = false;
-                  
-                  if(currentTP > 0)
+                  // Only move SL if it's better than current
+                  if(posType == POSITION_TYPE_BUY)
                   {
-                     // TP exists: always move SL if better
-                     shouldMoveSL = true;
-                  }
-                  else if(currentSL == 0)
-                  {
-                     // No TP and no SL: move SL to break even
-                     shouldMoveSL = true;
-                  }
-                  else
-                  {
-                     // No TP but SL exists: don't move SL (keep original SL)
-                     shouldMoveSL = false;
-                     Print("🧠 SMART MODE: Break Even triggered at 20% progress, but keeping original SL (no TP)");
-                  }
-                  
-                  if(shouldMoveSL)
-                  {
-                     if(posType == POSITION_TYPE_BUY)
+                     if(currentSL == 0 || breakEvenSL > currentSL)
                      {
-                        if(currentSL == 0 || breakEvenSL > currentSL)
-                        {
-                           newSL = breakEvenSL;
-                           needModify = true;
-                           Print("🧠 SMART MODE: Break Even triggered at 20% progress | Locked profit at 5% (", breakEvenSL, ")");
-                        }
+                        newSL = breakEvenSL;
+                        needModify = true;
+                        Print("🧠 SMART MODE: Break Even triggered at 20% progress | Locked profit at 5% (", breakEvenSL, ")");
                      }
-                     else // SELL
+                  }
+                  else // SELL
+                  {
+                     if(currentSL == 0 || breakEvenSL < currentSL)
                      {
-                        if(currentSL == 0 || breakEvenSL < currentSL)
-                        {
-                           newSL = breakEvenSL;
-                           needModify = true;
-                           Print("🧠 SMART MODE: Break Even triggered at 20% progress | Locked profit at 5% (", breakEvenSL, ")");
-                        }
+                        newSL = breakEvenSL;
+                        needModify = true;
+                        Print("🧠 SMART MODE: Break Even triggered at 20% progress | Locked profit at 5% (", breakEvenSL, ")");
                      }
                   }
                   
                   // Trailing Stop: After break even, trail at 15% distance from current price
-                  // Works the same way whether TP exists or not
                   if(progress > 0.20)
                   {
                      double trailingDistance = 0.15 * distance;
@@ -870,26 +837,11 @@ void ManageOpenTrades()
                            trailingSL = breakEvenSL;
                         
                         // Only move SL up, never down (trailingSL must be better than currentSL)
-                        // If no TP and original SL exists, only move if trailingSL is better than original SL
-                        if(currentTP > 0)
+                        if(currentSL == 0 || trailingSL > currentSL)
                         {
-                           // TP exists: move SL normally
-                           if(currentSL == 0 || trailingSL > currentSL)
-                           {
-                              newSL = trailingSL;
-                              needModify = true;
-                              Print("🧠 SMART MODE: Trailing Stop at 15% distance (", trailingSL, ") | Progress: ", (progress * 100), "%");
-                           }
-                        }
-                        else
-                        {
-                           // No TP: move SL if trailingSL is better than current SL (even if original SL exists)
-                           if(currentSL == 0 || trailingSL > currentSL)
-                           {
-                              newSL = trailingSL;
-                              needModify = true;
-                              Print("🧠 SMART MODE: Trailing Stop at 15% distance (", trailingSL, ") | Progress: ", (progress * 100), "% | No TP");
-                           }
+                           newSL = trailingSL;
+                           needModify = true;
+                           Print("🧠 SMART MODE: Trailing Stop at 15% distance (", trailingSL, ") | Progress: ", (progress * 100), "%");
                         }
                      }
                      else // SELL
@@ -900,26 +852,11 @@ void ManageOpenTrades()
                            trailingSL = breakEvenSL;
                         
                         // Only move SL down, never up (trailingSL must be better than currentSL)
-                        // If no TP and original SL exists, only move if trailingSL is better than original SL
-                        if(currentTP > 0)
+                        if(currentSL == 0 || trailingSL < currentSL)
                         {
-                           // TP exists: move SL normally
-                           if(currentSL == 0 || trailingSL < currentSL)
-                           {
-                              newSL = trailingSL;
-                              needModify = true;
-                              Print("🧠 SMART MODE: Trailing Stop at 15% distance (", trailingSL, ") | Progress: ", (progress * 100), "%");
-                           }
-                        }
-                        else
-                        {
-                           // No TP: move SL if trailingSL is better than current SL (even if original SL exists)
-                           if(currentSL == 0 || trailingSL < currentSL)
-                           {
-                              newSL = trailingSL;
-                              needModify = true;
-                              Print("🧠 SMART MODE: Trailing Stop at 15% distance (", trailingSL, ") | Progress: ", (progress * 100), "% | No TP");
-                           }
+                           newSL = trailingSL;
+                           needModify = true;
+                           Print("🧠 SMART MODE: Trailing Stop at 15% distance (", trailingSL, ") | Progress: ", (progress * 100), "%");
                         }
                      }
                   }
