@@ -277,9 +277,43 @@ def receive_account_status():
     global accounts_data
     
     try:
-        data = request.get_json()
+        # Try to get JSON data - handle both JSON and form-encoded
+        data = None
+        
+        # Try JSON first
+        if request.is_json or request.content_type == 'application/json':
+            data = request.get_json(silent=True, force=True)
+        
+        # If not JSON, try form-encoded
+        if not data and request.form:
+            # Convert form data to dict (if sent as form-encoded)
+            form_dict = dict(request.form)
+            if form_dict:
+                # Try to parse as JSON string if it's in form data
+                if 'data' in form_dict:
+                    import json
+                    try:
+                        data = json.loads(form_dict['data'])
+                    except:
+                        pass
+        
+        # If still no data, try raw data (MT5 WebRequest sometimes doesn't set Content-Type correctly)
         if not data:
-            return jsonify({"error": "No data provided"}), 400
+            raw_data = request.get_data(as_text=True)
+            if raw_data:
+                import json
+                try:
+                    data = json.loads(raw_data)
+                    print(f"  📥 Parsed JSON from raw data")
+                except Exception as e:
+                    print(f"  ⚠️  Failed to parse raw data as JSON: {e}")
+                    print(f"  📥 Raw data preview: {raw_data[:200]}")
+        
+        if not data:
+            print(f"  ❌ No data provided. Content-Type: {request.content_type}")
+            print(f"  📥 Raw data length: {len(request.get_data(as_text=True))}")
+            print(f"  📥 Raw data preview: {request.get_data(as_text=True)[:200]}")
+            return jsonify({"error": "No data provided", "content_type": request.content_type}), 400
         
         account_id = data.get('account_id') or data.get('account_number')
         if not account_id:
