@@ -94,6 +94,10 @@ signal_history = []  # Store last 10 signals for debugging
 signal_lock = threading.Lock()
 MAX_HISTORY = 10
 
+# Store account monitoring data
+accounts_data = {}  # {account_id: {balance, trades, last_update, etc}}
+accounts_lock = threading.Lock()
+
 @app.route('/api/signal', methods=['POST'])
 def receive_signal():
     """Δέχεται signal από το bridge server"""
@@ -266,6 +270,378 @@ def get_signal_history():
             "history": signal_history,
             "total_received": signal_counter
         }), 200
+
+@app.route('/api/account/status', methods=['POST'])
+def receive_account_status():
+    """Δέχεται account status από SignalReceiver instances"""
+    global accounts_data
+    
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "No data provided"}), 400
+        
+        account_id = data.get('account_id') or data.get('account_number')
+        if not account_id:
+            return jsonify({"error": "account_id required"}), 400
+        
+        with accounts_lock:
+            accounts_data[str(account_id)] = {
+                "account_id": account_id,
+                "account_name": data.get('account_name', 'Unknown'),
+                "balance": data.get('balance', 0),
+                "equity": data.get('equity', 0),
+                "open_trades": data.get('open_trades', []),
+                "daily_profit": data.get('daily_profit', 0),
+                "is_running": data.get('is_running', False),
+                "last_update": datetime.now().isoformat(),
+                "magic_number": data.get('magic_number', 0),
+                "server": data.get('server', 'Unknown')
+            }
+        
+        print(f"  📊 Account {account_id} status updated")
+        return jsonify({"status": "ok", "account_id": account_id}), 200
+        
+    except Exception as e:
+        print(f"✗ Error receiving account status: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/accounts', methods=['GET'])
+def get_all_accounts():
+    """Επιστρέφει όλα τα accounts"""
+    global accounts_data
+    
+    with accounts_lock:
+        # Clean up old accounts (not updated in last 5 minutes)
+        current_time = datetime.now()
+        accounts_to_remove = []
+        
+        for account_id, account_data in accounts_data.items():
+            last_update_str = account_data.get('last_update', '')
+            if last_update_str:
+                try:
+                    last_update = datetime.fromisoformat(last_update_str)
+                    if (current_time - last_update).total_seconds() > 300:  # 5 minutes
+                        accounts_to_remove.append(account_id)
+                except:
+                    pass
+        
+        for account_id in accounts_to_remove:
+            del accounts_data[account_id]
+        
+        return jsonify({
+            "accounts": list(accounts_data.values()),
+            "total": len(accounts_data)
+        }), 200
+
+@app.route('/dashboard', methods=['GET'])
+def dashboard():
+    """Web dashboard για monitoring"""
+    return '''
+<!DOCTYPE html>
+<html lang="el">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MT5 Signal Receiver - Monitoring Dashboard</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 20px;
+            min-height: 100vh;
+        }
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+        h1 {
+            color: white;
+            text-align: center;
+            margin-bottom: 30px;
+            font-size: 2.5em;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+        }
+        .stats-bar {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        .stat-card {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            text-align: center;
+        }
+        .stat-card h3 {
+            color: #667eea;
+            font-size: 0.9em;
+            margin-bottom: 10px;
+        }
+        .stat-card .value {
+            font-size: 2em;
+            font-weight: bold;
+            color: #333;
+        }
+        .accounts-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
+            gap: 20px;
+        }
+        .account-card {
+            background: white;
+            border-radius: 10px;
+            padding: 20px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            transition: transform 0.2s;
+        }
+        .account-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 6px 12px rgba(0,0,0,0.15);
+        }
+        .account-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+            padding-bottom: 15px;
+            border-bottom: 2px solid #f0f0f0;
+        }
+        .account-name {
+            font-size: 1.3em;
+            font-weight: bold;
+            color: #333;
+        }
+        .status-badge {
+            padding: 5px 15px;
+            border-radius: 20px;
+            font-size: 0.8em;
+            font-weight: bold;
+        }
+        .status-running {
+            background: #4CAF50;
+            color: white;
+        }
+        .status-stopped {
+            background: #f44336;
+            color: white;
+        }
+        .account-info {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+        .info-item {
+            display: flex;
+            flex-direction: column;
+        }
+        .info-label {
+            font-size: 0.8em;
+            color: #666;
+            margin-bottom: 5px;
+        }
+        .info-value {
+            font-size: 1.1em;
+            font-weight: bold;
+            color: #333;
+        }
+        .profit-positive { color: #4CAF50; }
+        .profit-negative { color: #f44336; }
+        .trades-list {
+            margin-top: 15px;
+        }
+        .trades-list h4 {
+            color: #667eea;
+            margin-bottom: 10px;
+            font-size: 0.9em;
+        }
+        .trade-item {
+            background: #f9f9f9;
+            padding: 10px;
+            border-radius: 5px;
+            margin-bottom: 8px;
+            font-size: 0.9em;
+        }
+        .trade-item strong {
+            color: #667eea;
+        }
+        .refresh-btn {
+            position: fixed;
+            bottom: 30px;
+            right: 30px;
+            background: #4CAF50;
+            color: white;
+            border: none;
+            padding: 15px 25px;
+            border-radius: 50px;
+            font-size: 1em;
+            cursor: pointer;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+            transition: background 0.3s;
+        }
+        .refresh-btn:hover {
+            background: #45a049;
+        }
+        .no-accounts {
+            text-align: center;
+            color: white;
+            font-size: 1.5em;
+            padding: 50px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>📊 MT5 Signal Receiver - Monitoring Dashboard</h1>
+        
+        <div class="stats-bar" id="statsBar">
+            <!-- Stats will be populated by JavaScript -->
+        </div>
+        
+        <div class="accounts-grid" id="accountsGrid">
+            <!-- Accounts will be populated by JavaScript -->
+        </div>
+        
+        <div class="no-accounts" id="noAccounts" style="display: none;">
+            ⏳ Δεν υπάρχουν accounts συνδεδεμένα...
+        </div>
+    </div>
+    
+    <button class="refresh-btn" onclick="loadAccounts()">🔄 Refresh</button>
+    
+    <script>
+        function formatNumber(num) {
+            return new Intl.NumberFormat('el-GR', { 
+                minimumFractionDigits: 2, 
+                maximumFractionDigits: 2 
+            }).format(num);
+        }
+        
+        function formatDate(dateStr) {
+            if (!dateStr) return 'N/A';
+            const date = new Date(dateStr);
+            return date.toLocaleString('el-GR');
+        }
+        
+        function loadAccounts() {
+            fetch('/api/accounts')
+                .then(response => response.json())
+                .then(data => {
+                    const accounts = data.accounts || [];
+                    
+                    // Update stats
+                    const totalAccounts = accounts.length;
+                    const runningAccounts = accounts.filter(a => a.is_running).length;
+                    const totalTrades = accounts.reduce((sum, a) => sum + (a.open_trades?.length || 0), 0);
+                    const totalDailyProfit = accounts.reduce((sum, a) => sum + (a.daily_profit || 0), 0);
+                    
+                    document.getElementById('statsBar').innerHTML = `
+                        <div class="stat-card">
+                            <h3>Σύνολο Accounts</h3>
+                            <div class="value">${totalAccounts}</div>
+                        </div>
+                        <div class="stat-card">
+                            <h3>Ενεργά Accounts</h3>
+                            <div class="value">${runningAccounts}</div>
+                        </div>
+                        <div class="stat-card">
+                            <h3>Ανοιχτά Trades</h3>
+                            <div class="value">${totalTrades}</div>
+                        </div>
+                        <div class="stat-card">
+                            <h3>Συνολικό Daily Profit</h3>
+                            <div class="value ${totalDailyProfit >= 0 ? 'profit-positive' : 'profit-negative'}">
+                                ${formatNumber(totalDailyProfit)} €
+                            </div>
+                        </div>
+                    `;
+                    
+                    // Update accounts grid
+                    if (accounts.length === 0) {
+                        document.getElementById('accountsGrid').style.display = 'none';
+                        document.getElementById('noAccounts').style.display = 'block';
+                    } else {
+                        document.getElementById('accountsGrid').style.display = 'grid';
+                        document.getElementById('noAccounts').style.display = 'none';
+                        
+                        document.getElementById('accountsGrid').innerHTML = accounts.map(account => {
+                            const trades = account.open_trades || [];
+                            const tradesHtml = trades.length > 0 
+                                ? trades.map(trade => `
+                                    <div class="trade-item">
+                                        <strong>${trade.symbol}</strong> ${trade.type} | 
+                                        Volume: ${trade.volume} | 
+                                        Entry: ${formatNumber(trade.entry_price)} | 
+                                        Profit: <span class="${trade.profit >= 0 ? 'profit-positive' : 'profit-negative'}">
+                                            ${formatNumber(trade.profit)} €
+                                        </span>
+                                    </div>
+                                `).join('')
+                                : '<div class="trade-item">Δεν υπάρχουν ανοιχτά trades</div>';
+                            
+                            return `
+                                <div class="account-card">
+                                    <div class="account-header">
+                                        <div class="account-name">${account.account_name || 'Account ' + account.account_id}</div>
+                                        <span class="status-badge ${account.is_running ? 'status-running' : 'status-stopped'}">
+                                            ${account.is_running ? '▶️ Running' : '⏸️ Stopped'}
+                                        </span>
+                                    </div>
+                                    <div class="account-info">
+                                        <div class="info-item">
+                                            <span class="info-label">Account ID</span>
+                                            <span class="info-value">${account.account_id}</span>
+                                        </div>
+                                        <div class="info-item">
+                                            <span class="info-label">Server</span>
+                                            <span class="info-value">${account.server || 'N/A'}</span>
+                                        </div>
+                                        <div class="info-item">
+                                            <span class="info-label">Balance</span>
+                                            <span class="info-value">${formatNumber(account.balance || 0)} €</span>
+                                        </div>
+                                        <div class="info-item">
+                                            <span class="info-label">Equity</span>
+                                            <span class="info-value">${formatNumber(account.equity || 0)} €</span>
+                                        </div>
+                                        <div class="info-item">
+                                            <span class="info-label">Daily Profit</span>
+                                            <span class="info-value ${account.daily_profit >= 0 ? 'profit-positive' : 'profit-negative'}">
+                                                ${formatNumber(account.daily_profit || 0)} €
+                                            </span>
+                                        </div>
+                                        <div class="info-item">
+                                            <span class="info-label">Last Update</span>
+                                            <span class="info-value">${formatDate(account.last_update)}</span>
+                                        </div>
+                                    </div>
+                                    <div class="trades-list">
+                                        <h4>Ανοιχτά Trades (${trades.length})</h4>
+                                        ${tradesHtml}
+                                    </div>
+                                </div>
+                            `;
+                        }).join('');
+                    }
+                })
+                .catch(error => {
+                    console.error('Error loading accounts:', error);
+                    document.getElementById('accountsGrid').innerHTML = 
+                        '<div class="no-accounts">❌ Σφάλμα φόρτωσης δεδομένων</div>';
+                });
+        }
+        
+        // Auto-refresh every 10 seconds
+        loadAccounts();
+        setInterval(loadAccounts, 10000);
+    </script>
+</body>
+</html>
+    ''', 200
 
 if __name__ == '__main__':
     print("=" * 50)

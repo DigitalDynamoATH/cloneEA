@@ -19,6 +19,8 @@ input group "=== BASIC SETTINGS ==="
 input int      Magic_Number = 98765;           // Magic number for this EA
 input int      Check_Interval_MS = 100;         // Check interval in milliseconds
 input string   Ngrok_API_URL = "https://uncloven-megadont-elisa.ngrok-free.dev/api/signal";  // API endpoint (auto-updated by start_all.sh)
+input bool     Enable_Monitoring = true;        // Send account status to monitoring dashboard
+input string   Monitoring_API_URL = "https://cloneea.onrender.com/api/account/status";  // Monitoring API endpoint
 
 //+------------------------------------------------------------------+
 //| ==================== TRADE SETTINGS ====================         |
@@ -64,6 +66,7 @@ int lastSignalId = 0;  // Track last received signal ID from API
 datetime lastDailyCloseTime = 0;  // Track last daily close execution
 datetime lastDailyReset = 0;  // Track daily profit reset time
 bool dailyTargetReached = false;  // Track if daily profit target was reached (to close all trades once)
+datetime lastStatusSendTime = 0;  // Track last time we sent account status
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
@@ -92,11 +95,23 @@ int OnInit()
       Print("✅ Custom Symbol: ENABLED (", Custom_Symbol, ")");
    if(Use_Daily_Profit_Target)
       Print("✅ Daily Profit Target: ENABLED (", Daily_Profit_Target_EUR, " EUR)");
+   if(Enable_Monitoring)
+      Print("📊 Monitoring: ENABLED (", Monitoring_API_URL, ")");
    Print("API URL: ", Ngrok_API_URL);
    Print("⚠️  Make sure API URL is in allowed list:");
    Print("   Tools -> Options -> Expert Advisors -> 'Allow WebRequest for listed URL'");
    Print("   Add: ", Ngrok_API_URL);
+   if(Enable_Monitoring && StringLen(Monitoring_API_URL) > 0)
+      Print("   Also add: ", Monitoring_API_URL);
    Print(sep);
+   
+   // Send initial status
+   if(Enable_Monitoring)
+   {
+      SendAccountStatus();
+      lastStatusSendTime = TimeCurrent();
+   }
+   
    return(INIT_SUCCEEDED);
 }
 
@@ -1266,6 +1281,106 @@ void OnTimer()
    
    // Update progress bar on timer too
    UpdateProgressBar();
+   
+   // Send account status to monitoring dashboard (every 30 seconds)
+   if(Enable_Monitoring && (TimeCurrent() - lastStatusSendTime) >= 30)
+   {
+      SendAccountStatus();
+      lastStatusSendTime = TimeCurrent();
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Send account status to monitoring dashboard                      |
+//+------------------------------------------------------------------+
+void SendAccountStatus()
+{
+   if(StringLen(Monitoring_API_URL) == 0)
+      return;
+   
+   // Get account info
+   long accountNumber = AccountInfoInteger(ACCOUNT_LOGIN);
+   string accountName = AccountInfoString(ACCOUNT_NAME);
+   string server = AccountInfoString(ACCOUNT_SERVER);
+   double balance = AccountInfoDouble(ACCOUNT_BALANCE);
+   double equity = AccountInfoDouble(ACCOUNT_EQUITY);
+   double dailyProfit = GetDailyProfit();
+   
+   // Collect open trades
+   string tradesJson = "[";
+   int tradeCount = 0;
+   
+   for(int i = 0; i < PositionsTotal(); i++)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket > 0 && PositionSelectByTicket(ticket))
+      {
+         if(PositionGetInteger(POSITION_MAGIC) == Magic_Number)
+         {
+            if(tradeCount > 0) tradesJson += ",";
+            
+            string symbol = PositionGetString(POSITION_SYMBOL);
+            ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+            double volume = PositionGetDouble(POSITION_VOLUME);
+            double entryPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+            double profit = PositionGetDouble(POSITION_PROFIT);
+            double swap = PositionGetDouble(POSITION_SWAP);
+            
+            tradesJson += "{";
+            tradesJson += "\"ticket\":" + IntegerToString(ticket) + ",";
+            tradesJson += "\"symbol\":\"" + symbol + "\",";
+            tradesJson += "\"type\":\"" + (posType == POSITION_TYPE_BUY ? "BUY" : "SELL") + "\",";
+            tradesJson += "\"volume\":" + DoubleToString(volume, 2) + ",";
+            tradesJson += "\"entry_price\":" + DoubleToString(entryPrice, 5) + ",";
+            tradesJson += "\"profit\":" + DoubleToString(profit + swap, 2);
+            tradesJson += "}";
+            
+            tradeCount++;
+         }
+      }
+   }
+   tradesJson += "]";
+   
+   // Create JSON payload
+   string jsonPayload = "{";
+   jsonPayload += "\"account_id\":" + IntegerToString(accountNumber) + ",";
+   jsonPayload += "\"account_name\":\"" + accountName + "\",";
+   jsonPayload += "\"server\":\"" + server + "\",";
+   jsonPayload += "\"balance\":" + DoubleToString(balance, 2) + ",";
+   jsonPayload += "\"equity\":" + DoubleToString(equity, 2) + ",";
+   jsonPayload += "\"daily_profit\":" + DoubleToString(dailyProfit, 2) + ",";
+   jsonPayload += "\"magic_number\":" + IntegerToString(Magic_Number) + ",";
+   jsonPayload += "\"is_running\":true,";
+   jsonPayload += "\"open_trades\":" + tradesJson;
+   jsonPayload += "}";
+   
+   // Send to API
+   string headers = "Content-Type: application/json\r\n";
+   headers += "\r\n";
+   
+   char post[];
+   char result[];
+   string result_headers;
+   
+   StringToCharArray(jsonPayload, post, 0, StringLen(jsonPayload));
+   int postSize = ArraySize(post);
+   
+   int res = WebRequest("POST", Monitoring_API_URL, headers, "", 5000, post, postSize, result, result_headers);
+   
+   if(res == 200)
+   {
+      Print("✅ Account status sent to monitoring dashboard");
+   }
+   else if(res != -1 && res != 1001)
+   {
+      // Only log non-timeout errors occasionally
+      static int errorLogCounter = 0;
+      errorLogCounter++;
+      if(errorLogCounter % 10 == 0)  // Log every 10th error
+      {
+         Print("⚠️  Failed to send account status. HTTP: ", res);
+      }
+   }
 }
 
 //+------------------------------------------------------------------+
