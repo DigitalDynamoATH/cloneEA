@@ -13,49 +13,70 @@
 #include <Trade\Trade.mqh>
 
 //+------------------------------------------------------------------+
+//| Session Types                                                    |
+//+------------------------------------------------------------------+
+enum ENUM_TRADING_SESSION
+{
+   SESSION_ASIAN,      // Asian Session (Calm Mode)
+   SESSION_LONDON,     // London Session (Normal Mode)
+   SESSION_NEWYORK,    // New York Session (Aggressive Mode)
+   SESSION_NONE        // No active session
+};
+
+//+------------------------------------------------------------------+
+//| SMART MODE Parameters Structure                                  |
+//+------------------------------------------------------------------+
+struct SmartModeParams
+{
+   double breakEvenTrigger;    // Break Even trigger percentage (e.g., 0.20 = 20%)
+   double lockProfit;          // Lock profit percentage (e.g., 0.05 = 5%)
+   double trailingDistance;    // Trailing stop distance percentage (e.g., 0.15 = 15%)
+   double virtualTP_EUR;       // Virtual TP in EUR when no TP is set
+   string modeName;            // Mode name for logging
+};
+
+//+------------------------------------------------------------------+
 //| ==================== BASIC SETTINGS ====================         |
 //+------------------------------------------------------------------+
 input group "=== BASIC SETTINGS ==="
-input int      Magic_Number = 98765;           // Magic number for this EA
-input int      Check_Interval_MS = 100;         // Check interval in milliseconds
-input string   Ngrok_API_URL = "https://uncloven-megadont-elisa.ngrok-free.dev/api/signal";  // API endpoint (auto-updated by start_all.sh)
-input bool     Enable_Monitoring = true;        // Send account status to monitoring dashboard
-input string   Monitoring_API_URL = "https://cloneea.onrender.com/api/account/status";  // Monitoring API endpoint
+input int      Magic_Number = 32777;
+input int      Check_Interval_MS = 100;
+input string   Ngrok_API_URL = "https://cloneea.onrender.com/api/signal";
 
 //+------------------------------------------------------------------+
 //| ==================== TRADE SETTINGS ====================         |
 //+------------------------------------------------------------------+
 input group "=== TRADE SETTINGS ==="
-input double   Volume_Number = 0.01;           // Lot size to open trades (exact volume used)
-input double   Stop_Loss_EUR = 0.0;            // Stop Loss in EUR (0 = no SL)
-input double   Take_Profit_EUR = 150.0;        // Take Profit in EUR (0 = no TP)
-input int      Slippage = 30;                   // Maximum slippage in points
-input string   Trade_Comment = "Copied Trade";  // Comment for opened trades
+input double   Volume_Number = 0.01;
+input double   Stop_Loss_EUR = 0.0;
+input double   Take_Profit_EUR = 150.0;
+input int      Slippage = 30;
+input string   Trade_Comment = "ΝΟΕΜΑ";
 
 //+------------------------------------------------------------------+
 //| ==================== SYMBOL SETTINGS ====================        |
 //+------------------------------------------------------------------+
 input group "=== SYMBOL SETTINGS ==="
-input bool     Use_Custom_Symbol = false;      // Use custom symbol instead of signal's symbol
-input string   Custom_Symbol = "XAUUSD";       // Custom symbol to trade (if Use_Custom_Symbol = true)
+input bool     Use_Custom_Symbol = false;
+input string   Custom_Symbol = "XAUUSD";
 
 //+------------------------------------------------------------------+
 //| ==================== TRADE MANAGEMENT ====================       |
 //+------------------------------------------------------------------+
 input group "=== TRADE MANAGEMENT ==="
-input bool     Use_Smart_Mode = false;         // Enable SMART MODE (Break Even: 20% trigger, 5% lock | Trailing Stop: 15% distance)
+input bool     Use_Smart_Mode = false;
 
 //+------------------------------------------------------------------+
 //| ==================== DAILY OPTIONS ====================          |
 //+------------------------------------------------------------------+
 input group "=== DAILY OPTIONS ==="
-input bool     Use_Daily_Profit_Target = false; // Stop opening trades when daily profit target is reached
-input double   Daily_Profit_Target_EUR = 1000.0; // Daily profit target in EUR (goal for progress bar)
-input double   Commission_Per_Trade_EUR = 0.0;  // Commission per trade in EUR (added as loss to daily profit)
-input bool     Use_Daily_Close = false;        // Close all trades at specific time daily
-input int      Daily_Close_Hour = 22;           // Hour to close trades (0-23)
-input int      Daily_Close_Minute = 0;          // Minute to close trades (0-59)
-input bool     Close_Only_Profit = false;      // Close only profitable trades at daily close
+input bool     Use_Daily_Profit_Target = false;
+input double   Daily_Profit_Target_EUR = 1000.0;
+input double   Commission_Per_Trade_EUR = 0.0;
+input bool     Use_Daily_Close = false;
+input int      Daily_Close_Hour = 22;
+input int      Daily_Close_Minute = 0;
+input bool     Close_Only_Profit = false;
 
 //--- Global variables
 CTrade trade;
@@ -66,7 +87,6 @@ int lastSignalId = 0;  // Track last received signal ID from API
 datetime lastDailyCloseTime = 0;  // Track last daily close execution
 datetime lastDailyReset = 0;  // Track daily profit reset time
 bool dailyTargetReached = false;  // Track if daily profit target was reached (to close all trades once)
-datetime lastStatusSendTime = 0;  // Track last time we sent account status
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
@@ -88,29 +108,23 @@ int OnInit()
    Print("Custom SL: ", Stop_Loss_EUR, " EUR, TP: ", Take_Profit_EUR, " EUR");
    Print("✅ Using DIRECT HTTP (no files)");
    if(Use_Smart_Mode)
-      Print("🧠 SMART MODE: ENABLED (Break Even: 20% trigger, 5% lock | Trailing Stop: 15% distance)");
+   {
+      Print("🧠 SMART MODE: ENABLED (Session-based: Calm/Normal/Aggressive)");
+      Print("   📍 Asian Session (Calm): Break Even 15%, Lock 3%, Trailing 10%, Virtual TP 50 EUR");
+      Print("   📍 London Session (Normal): Break Even 20%, Lock 5%, Trailing 15%, Virtual TP 100 EUR");
+      Print("   📍 New York Session (Aggressive): Break Even 25%, Lock 8%, Trailing 20%, Virtual TP 150 EUR");
+   }
    if(Use_Daily_Close)
       Print("✅ Daily Close: ENABLED (", Daily_Close_Hour, ":", StringFormat("%02d", Daily_Close_Minute), ")");
    if(Use_Custom_Symbol)
       Print("✅ Custom Symbol: ENABLED (", Custom_Symbol, ")");
    if(Use_Daily_Profit_Target)
       Print("✅ Daily Profit Target: ENABLED (", Daily_Profit_Target_EUR, " EUR)");
-   if(Enable_Monitoring)
-      Print("📊 Monitoring: ENABLED (", Monitoring_API_URL, ")");
    Print("API URL: ", Ngrok_API_URL);
    Print("⚠️  Make sure API URL is in allowed list:");
    Print("   Tools -> Options -> Expert Advisors -> 'Allow WebRequest for listed URL'");
    Print("   Add: ", Ngrok_API_URL);
-   if(Enable_Monitoring && StringLen(Monitoring_API_URL) > 0)
-      Print("   Also add: ", Monitoring_API_URL);
    Print(sep);
-   
-   // Send initial status
-   if(Enable_Monitoring)
-   {
-      SendAccountStatus();
-      lastStatusSendTime = TimeCurrent();
-   }
    
    return(INIT_SUCCEEDED);
 }
@@ -740,6 +754,81 @@ void AddProcessedTicket(ulong ticket)
 }
 
 //+------------------------------------------------------------------+
+//| Detect current trading session                                   |
+//+------------------------------------------------------------------+
+ENUM_TRADING_SESSION GetCurrentSession()
+{
+   // Only check session if SMART MODE is enabled
+   if(!Use_Smart_Mode)
+      return SESSION_NONE;
+   
+   MqlDateTime dt;
+   TimeToStruct(TimeCurrent(), dt);
+   int hour = dt.hour;
+   
+   // Asian Session: 00:00 - 08:00 GMT
+   if(hour >= 0 && hour < 8)
+      return SESSION_ASIAN;
+   // London Session: 08:00 - 16:00 GMT
+   else if(hour >= 8 && hour < 16)
+      return SESSION_LONDON;
+   // New York Session: 16:00 - 00:00 GMT
+   else if(hour >= 16 && hour < 24)
+      return SESSION_NEWYORK;
+   
+   return SESSION_NONE;
+}
+
+//+------------------------------------------------------------------+
+//| Get SMART MODE parameters for current session                    |
+//+------------------------------------------------------------------+
+SmartModeParams GetSmartModeParams(ENUM_TRADING_SESSION session)
+{
+   SmartModeParams params;
+   
+   switch(session)
+   {
+      case SESSION_ASIAN:
+         // Calm Mode: Lower volatility, faster break even, tighter trailing
+         params.breakEvenTrigger = 0.15;  // 15% - faster break even
+         params.lockProfit = 0.03;         // 3% - smaller lock profit
+         params.trailingDistance = 0.10;   // 10% - tighter trailing
+         params.virtualTP_EUR = 50.0;      // 50 EUR virtual TP
+         params.modeName = "CALM (Asian)";
+         break;
+         
+      case SESSION_LONDON:
+         // Normal Mode: Medium volatility, balanced settings
+         params.breakEvenTrigger = 0.20;   // 20% - standard
+         params.lockProfit = 0.05;         // 5% - standard
+         params.trailingDistance = 0.15;   // 15% - standard
+         params.virtualTP_EUR = 100.0;    // 100 EUR virtual TP
+         params.modeName = "NORMAL (London)";
+         break;
+         
+      case SESSION_NEWYORK:
+         // Aggressive Mode: High volatility, slower break even, wider trailing
+         params.breakEvenTrigger = 0.25;    // 25% - slower break even
+         params.lockProfit = 0.08;         // 8% - larger lock profit
+         params.trailingDistance = 0.20;   // 20% - wider trailing
+         params.virtualTP_EUR = 150.0;     // 150 EUR virtual TP
+         params.modeName = "AGGRESSIVE (New York)";
+         break;
+         
+      default:
+         // Default to Normal Mode if no session
+         params.breakEvenTrigger = 0.20;
+         params.lockProfit = 0.05;
+         params.trailingDistance = 0.15;
+         params.virtualTP_EUR = 100.0;
+         params.modeName = "NORMAL (Default)";
+         break;
+   }
+   
+   return params;
+}
+
+//+------------------------------------------------------------------+
 //| Manage open trades (Trailing Stop, Break Even)                   |
 //+------------------------------------------------------------------+
 void ManageOpenTrades()
@@ -791,26 +880,125 @@ void ManageOpenTrades()
          bool needModify = false;
          double newSL = currentSL;
          
-         // SMART MODE Logic (percentage-based)
-         if(Use_Smart_Mode && currentTP > 0)
+         // SMART MODE Logic (percentage-based, session-aware)
+         if(Use_Smart_Mode)
          {
-            // Calculate total distance D = |TP - Entry|
-            double distance = MathAbs(currentTP - openPrice);
+            // Get current session and parameters
+            ENUM_TRADING_SESSION currentSession = GetCurrentSession();
+            
+            // Only proceed if we have an active session
+            if(currentSession == SESSION_NONE)
+               continue; // Skip this trade if no active session
+               
+            SmartModeParams params = GetSmartModeParams(currentSession);
+            
+            // Calculate total distance D
+            double distance = 0;
+            double virtualTP = 0; // For tracking progress when no TP exists
+            double targetProfitEUR = params.virtualTP_EUR; // Virtual TP from session parameters
+            
+            if(currentTP > 0)
+            {
+               // If TP exists: D = |TP - Entry|
+               distance = MathAbs(currentTP - openPrice);
+               virtualTP = currentTP;
+            }
+            else
+            {
+               // If no TP: Calculate virtual TP that gives 100 EUR profit
+               // Get EUR rate
+               double eurRate = 1.0;
+               string accountCurrency = AccountInfoString(ACCOUNT_CURRENCY);
+               if(accountCurrency != "EUR")
+               {
+                  if(accountCurrency == "USD")
+                     eurRate = SymbolInfoDouble("EURUSD", SYMBOL_BID);
+                  if(eurRate == 0) eurRate = 1.0;
+               }
+               
+               // Calculate virtual TP using binary search (similar to TP calculation)
+               double minDist = minStopDistance;
+               double maxDist = 50000.0 * point;
+               bool found = false;
+               
+               for(int i = 0; i < 500; i++)
+               {
+                  if((maxDist - minDist) <= point) break;
+                  
+                  double testDist = (minDist + maxDist) / 2.0;
+                  double testTP = (posType == POSITION_TYPE_BUY) ? openPrice + testDist : openPrice - testDist;
+                  testTP = NormalizeDouble(testTP, digits);
+                  
+                  double profit = 0;
+                  if(OrderCalcProfit((ENUM_ORDER_TYPE)posType, symbol, volume, openPrice, testTP, profit))
+                  {
+                     double profitEUR = profit / eurRate;
+                     
+                     if(MathAbs(profitEUR - targetProfitEUR) < 0.1)
+                     {
+                        virtualTP = testTP;
+                        distance = testDist;
+                        found = true;
+                        break;
+                     }
+                     else if(profitEUR > targetProfitEUR)
+                        maxDist = testDist;
+                     else
+                        minDist = testDist;
+                  }
+                  else
+                  {
+                     minDist = testDist;
+                  }
+               }
+               
+               // Fallback: if binary search failed, use tick-based calculation
+               if(!found)
+               {
+                  double tickValue = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_VALUE);
+                  double tickSize = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_SIZE);
+                  
+                  if(tickValue > 0 && tickSize > 0)
+                  {
+                     double targetProfit = targetProfitEUR * eurRate;
+                     double profitPerTick = tickValue * volume;
+                     
+                     if(profitPerTick > 0)
+                     {
+                        double ticksNeeded = targetProfit / profitPerTick;
+                        distance = ticksNeeded * tickSize;
+                        
+                        if(distance < minStopDistance && minStopDistance > 0)
+                           distance = minStopDistance;
+                        
+                        virtualTP = (posType == POSITION_TYPE_BUY) ? openPrice + distance : openPrice - distance;
+                        virtualTP = NormalizeDouble(virtualTP, digits);
+                     }
+                  }
+               }
+               
+               // If still no distance, use default
+               if(distance == 0)
+               {
+                  distance = 100.0 * point;
+                  virtualTP = (posType == POSITION_TYPE_BUY) ? openPrice + distance : openPrice - distance;
+               }
+            }
             
             if(distance > 0)
             {
-               // Calculate current progress: how far we are from entry towards TP
+               // Calculate current progress: how far we are from entry towards virtual TP
                double progress = 0;
                if(posType == POSITION_TYPE_BUY)
-                  progress = (currentPrice - openPrice) / distance; // 0 to 1 (0 = entry, 1 = TP)
+                  progress = (currentPrice - openPrice) / distance; // 0 = entry, 1 = virtual TP
                else
-                  progress = (openPrice - currentPrice) / distance; // 0 to 1 (0 = entry, 1 = TP)
+                  progress = (openPrice - currentPrice) / distance; // 0 = entry, 1 = virtual TP
                
-               // Break Even: Trigger at 20% of distance, lock profit at 5%
-               if(progress >= 0.20)
+               // Break Even: Trigger based on session parameters
+               if(progress >= params.breakEvenTrigger)
                {
-                  // Lock profit at 5% of distance
-                  double lockedProfitDistance = 0.05 * distance;
+                  // Lock profit based on session parameters
+                  double lockedProfitDistance = params.lockProfit * distance;
                   double breakEvenSL = 0;
                   
                   if(posType == POSITION_TYPE_BUY)
@@ -825,7 +1013,10 @@ void ManageOpenTrades()
                      {
                         newSL = breakEvenSL;
                         needModify = true;
-                        Print("🧠 SMART MODE: Break Even triggered at 20% progress | Locked profit at 5% (", breakEvenSL, ")");
+                        if(currentTP > 0)
+                           Print("🧠 SMART MODE [", params.modeName, "]: Break Even triggered at ", (params.breakEvenTrigger * 100), "% progress | Locked profit at ", (params.lockProfit * 100), "% (", breakEvenSL, ")");
+                        else
+                           Print("🧠 SMART MODE [", params.modeName, "]: Break Even triggered at ", (params.breakEvenTrigger * params.virtualTP_EUR), " EUR profit | Locked profit at ", (params.lockProfit * params.virtualTP_EUR), " EUR (", breakEvenSL, ")");
                      }
                   }
                   else // SELL
@@ -834,14 +1025,17 @@ void ManageOpenTrades()
                      {
                         newSL = breakEvenSL;
                         needModify = true;
-                        Print("🧠 SMART MODE: Break Even triggered at 20% progress | Locked profit at 5% (", breakEvenSL, ")");
+                        if(currentTP > 0)
+                           Print("🧠 SMART MODE [", params.modeName, "]: Break Even triggered at ", (params.breakEvenTrigger * 100), "% progress | Locked profit at ", (params.lockProfit * 100), "% (", breakEvenSL, ")");
+                        else
+                           Print("🧠 SMART MODE [", params.modeName, "]: Break Even triggered at ", (params.breakEvenTrigger * params.virtualTP_EUR), " EUR profit | Locked profit at ", (params.lockProfit * params.virtualTP_EUR), " EUR (", breakEvenSL, ")");
                      }
                   }
                   
-                  // Trailing Stop: After break even, trail at 15% distance from current price
-                  if(progress > 0.20)
+                  // Trailing Stop: After break even, trail based on session parameters
+                  if(progress > params.breakEvenTrigger)
                   {
-                     double trailingDistance = 0.15 * distance;
+                     double trailingDistance = params.trailingDistance * distance;
                      double trailingSL = 0;
                      
                      if(posType == POSITION_TYPE_BUY)
@@ -856,7 +1050,10 @@ void ManageOpenTrades()
                         {
                            newSL = trailingSL;
                            needModify = true;
-                           Print("🧠 SMART MODE: Trailing Stop at 15% distance (", trailingSL, ") | Progress: ", (progress * 100), "%");
+                           if(currentTP > 0)
+                              Print("🧠 SMART MODE [", params.modeName, "]: Trailing Stop at ", (params.trailingDistance * 100), "% distance (", trailingSL, ") | Progress: ", (progress * 100), "%");
+                           else
+                              Print("🧠 SMART MODE [", params.modeName, "]: Trailing Stop at ", (params.trailingDistance * params.virtualTP_EUR), " EUR distance (", trailingSL, ") | Progress: ", (progress * 100), "% (Virtual TP: ", params.virtualTP_EUR, " EUR)");
                         }
                      }
                      else // SELL
@@ -871,7 +1068,10 @@ void ManageOpenTrades()
                         {
                            newSL = trailingSL;
                            needModify = true;
-                           Print("🧠 SMART MODE: Trailing Stop at 15% distance (", trailingSL, ") | Progress: ", (progress * 100), "%");
+                           if(currentTP > 0)
+                              Print("🧠 SMART MODE [", params.modeName, "]: Trailing Stop at ", (params.trailingDistance * 100), "% distance (", trailingSL, ") | Progress: ", (progress * 100), "%");
+                           else
+                              Print("🧠 SMART MODE [", params.modeName, "]: Trailing Stop at ", (params.trailingDistance * params.virtualTP_EUR), " EUR distance (", trailingSL, ") | Progress: ", (progress * 100), "% (Virtual TP: ", params.virtualTP_EUR, " EUR)");
                         }
                      }
                   }
@@ -1281,106 +1481,6 @@ void OnTimer()
    
    // Update progress bar on timer too
    UpdateProgressBar();
-   
-   // Send account status to monitoring dashboard (every 30 seconds)
-   if(Enable_Monitoring && (TimeCurrent() - lastStatusSendTime) >= 30)
-   {
-      SendAccountStatus();
-      lastStatusSendTime = TimeCurrent();
-   }
-}
-
-//+------------------------------------------------------------------+
-//| Send account status to monitoring dashboard                      |
-//+------------------------------------------------------------------+
-void SendAccountStatus()
-{
-   if(StringLen(Monitoring_API_URL) == 0)
-      return;
-   
-   // Get account info
-   long accountNumber = AccountInfoInteger(ACCOUNT_LOGIN);
-   string accountName = AccountInfoString(ACCOUNT_NAME);
-   string server = AccountInfoString(ACCOUNT_SERVER);
-   double balance = AccountInfoDouble(ACCOUNT_BALANCE);
-   double equity = AccountInfoDouble(ACCOUNT_EQUITY);
-   double dailyProfit = GetDailyProfit();
-   
-   // Collect open trades
-   string tradesJson = "[";
-   int tradeCount = 0;
-   
-   for(int i = 0; i < PositionsTotal(); i++)
-   {
-      ulong ticket = PositionGetTicket(i);
-      if(ticket > 0 && PositionSelectByTicket(ticket))
-      {
-         if(PositionGetInteger(POSITION_MAGIC) == Magic_Number)
-         {
-            if(tradeCount > 0) tradesJson += ",";
-            
-            string symbol = PositionGetString(POSITION_SYMBOL);
-            ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
-            double volume = PositionGetDouble(POSITION_VOLUME);
-            double entryPrice = PositionGetDouble(POSITION_PRICE_OPEN);
-            double profit = PositionGetDouble(POSITION_PROFIT);
-            double swap = PositionGetDouble(POSITION_SWAP);
-            
-            tradesJson += "{";
-            tradesJson += "\"ticket\":" + IntegerToString(ticket) + ",";
-            tradesJson += "\"symbol\":\"" + symbol + "\",";
-            tradesJson += "\"type\":\"" + (posType == POSITION_TYPE_BUY ? "BUY" : "SELL") + "\",";
-            tradesJson += "\"volume\":" + DoubleToString(volume, 2) + ",";
-            tradesJson += "\"entry_price\":" + DoubleToString(entryPrice, 5) + ",";
-            tradesJson += "\"profit\":" + DoubleToString(profit + swap, 2);
-            tradesJson += "}";
-            
-            tradeCount++;
-         }
-      }
-   }
-   tradesJson += "]";
-   
-   // Create JSON payload
-   string jsonPayload = "{";
-   jsonPayload += "\"account_id\":" + IntegerToString(accountNumber) + ",";
-   jsonPayload += "\"account_name\":\"" + accountName + "\",";
-   jsonPayload += "\"server\":\"" + server + "\",";
-   jsonPayload += "\"balance\":" + DoubleToString(balance, 2) + ",";
-   jsonPayload += "\"equity\":" + DoubleToString(equity, 2) + ",";
-   jsonPayload += "\"daily_profit\":" + DoubleToString(dailyProfit, 2) + ",";
-   jsonPayload += "\"magic_number\":" + IntegerToString(Magic_Number) + ",";
-   jsonPayload += "\"is_running\":true,";
-   jsonPayload += "\"open_trades\":" + tradesJson;
-   jsonPayload += "}";
-   
-   // Send to API
-   string headers = "Content-Type: application/json\r\n";
-   headers += "\r\n";
-   
-   char post[];
-   char result[];
-   string result_headers;
-   
-   StringToCharArray(jsonPayload, post, 0, StringLen(jsonPayload));
-   int postSize = ArraySize(post);
-   
-   int res = WebRequest("POST", Monitoring_API_URL, headers, "", 5000, post, postSize, result, result_headers);
-   
-   if(res == 200)
-   {
-      Print("✅ Account status sent to monitoring dashboard");
-   }
-   else if(res != -1 && res != 1001)
-   {
-      // Only log non-timeout errors occasionally
-      static int errorLogCounter = 0;
-      errorLogCounter++;
-      if(errorLogCounter % 10 == 0)  // Log every 10th error
-      {
-         Print("⚠️  Failed to send account status. HTTP: ", res);
-      }
-   }
 }
 
 //+------------------------------------------------------------------+
